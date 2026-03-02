@@ -1,109 +1,67 @@
 #!/bin/bash
 
-# VALIDAR ROOT
-
 if [ "$EUID" -ne 0 ]; then
- echo "Ejecuta como root"
- exit 1
+ echo "usar root"
+ exit
 fi
-
-
-# CARGAR MODULOS
 
 source ../lasfun/fundhcp.sh
 source ../lasfun/fundns.sh
 
-
-# CONTROL POR PARAMETROS
 case "$1" in
 
+ dhcp)
 
-# DHCP
+  if [ -z "$2" ]; then
+   echo "opciones dhcp:"
+   echo "./main.sh dhcp verificar"
+   echo "./main.sh dhcp instalar"
+   echo "./main.sh dhcp configurar"
+   echo "./main.sh dhcp reiniciar"
+   echo "./main.sh dhcp monitoreo"
+   echo "./main.sh dhcp reset"
+   exit
+  fi
 
-dhcp)
-
- case "$2" in
-
- verificar) verificar_dhcp_rango ;;
-
- instalar) instalar_dhcp_rango ;;
-
- configurar) configurar_dhcp_rango ;;
-
- reiniciar) guardar ;;
-
- monitoreo) monitoreo_rango ;;
-
- reset) reset_dhcp_rango ;;
-
- interfaz) verificar_interfaz_dhcp ;;
-
- *)
- echo "Uso DHCP:"
- echo "./main.sh dhcp verificar"
- echo "./main.sh dhcp instalar"
- echo "./main.sh dhcp configurar"
- echo "./main.sh dhcp reiniciar"
- echo "./main.sh dhcp monitoreo"
- echo "./main.sh dhcp reset"
- echo "./main.sh dhcp interfaz"
+  case "$2" in
+   verificar) verificar_dhcp ;;
+   instalar) instalar_dhcp ;;
+   configurar) configurar_dhcp ;;
+   reiniciar) guardaryreiniciar ;;
+   monitoreo) monitoreo ;;
+   reset) reset_dhcp ;;
+   *) echo "opcion dhcp no valida" ;;
+  esac
  ;;
 
- esac
-;;
+ dns)
 
+  if [ -z "$2" ]; then
+   echo "opciones dns:"
+   echo "./main.sh dns instalar"
+   echo "./main.sh dns estado"
+   echo "./main.sh dns agregar dominio ip"
+   echo "./main.sh dns listar"
+   echo "./main.sh dns eliminar dominio"
+   echo "./main.sh dns desinstalar"
+   exit
+  fi
 
-# DNS
-
-dns)
-
- case "$2" in
-
- instalar) activar_dns ;;
-
- estado) ver_estado ;;
-
- crear) crear_zona "$3" "$4" ;;
-
- listar) mostrar_zonas ;;
-
- eliminar) borrar_zona "$3" ;;
-
- remover) remover_dns ;;
-
- *)
- echo "Uso DNS:"
- echo "./main.sh dns instalar"
- echo "./main.sh dns estado"
- echo "./main.sh dns crear dominio IP"
- echo "./main.sh dns listar"
- echo "./main.sh dns eliminar dominio"
- echo "./main.sh dns remover"
+  case "$2" in
+   instalar) instalar ;;
+   estado) estado ;;
+   agregar) agregar "$3" "$4" ;;
+   listar) listar ;;
+   eliminar) eliminar_dominio "$3" ;;
+   desinstalar) desinstalar ;;
+   *) echo "opcion dns no valida" ;;
+  esac
  ;;
 
- esac
-;;
-
-
-# AYUDA GENERAL
-
-*)
-echo " SERVIDOR AUTOMATIZADO"
-echo "DHCP:"
-echo "./main.sh dhcp verificar"
-echo "./main.sh dhcp instalar"
-echo "./main.sh dhcp configurar"
-echo "./main.sh dhcp reiniciar"
-echo "./main.sh dhcp monitoreo"
-echo "./main.sh dhcp reset"
-echo ""
-echo "DNS:"
-echo "./main.sh dns instalar"
-echo "./main.sh dns estado"
-echo "./main.sh dns crear dominio.com 192.168.50.10"
-echo "./main.sh dns listar"
-echo "./main.sh dns elminar dominio"
-echo ""
-;;
+ *)
+  echo "uso general:"
+  echo "./main.sh dhcp"
+  echo "./main.sh dns"
+ ;;
 
 esac

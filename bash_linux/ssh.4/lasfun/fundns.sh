@@ -1,137 +1,134 @@
-CONF_PRINCIPAL="/etc/named.conf"
-DIRECTORIO_ZONAS="/var/named"
+#!/bin/bash
 
-# validar direccion ip
-comprobar_ip() {
+LOCALCONF="/etc/named.conf"
+ZONADIR="/var/named"
 
-    local ip=$1
+checar_ip() {
 
-    [[ $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+ ip=$1
 
-    IFS='.' read -r o1 o2 o3 o4 <<< "$ip"
+ [[ ! $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && return 1
 
-    for octeto in $o1 $o2 $o3 $o4
-    do
-        if ((octeto < 0 || octeto > 255)); then
-            return 1
-        fi
-    done
+ IFS='.' read -r a b c d <<< "$ip"
 
-    if [[ "$ip" == "0.0.0.0" ]]; then return 1; fi
-    if ((o4 == 255)); then return 1; fi
-    if ((o1 == 0 || o1 == 127)); then return 1; fi
+ for n in $a $b $c $d; do
+  (( n<0 || n>255 )) && return 1
+ done
 
-    return 0
+ [[ "$ip" == "0.0.0.0" ]] && return 1
+ (( d==255 )) && return 1
+ (( a==127 || a==0 )) && return 1
+
+ return 0
 }
 
-# instalar bind (Mageia usa dnf y servicio named)
-activar_dns() {
+dns_local() {
 
-    if rpm -q bind &>/dev/null; then
-        echo "DNS ya esta instalado"
-    else
-        echo "Instalando bind..."
-        sudo dnf install -y bind bind-utils
-        sudo systemctl enable named
-        sudo systemctl start named
-        echo "Instalacion completada"
-    fi
+ if systemctl is-active --quiet named; then
+  sudo tee /etc/resolv.conf >/dev/null <<EOF
+nameserver 127.0.0.1
+EOF
+ else
+  echo "named inactivo"
+ fi
 }
 
-# verificar estado
-ver_estado() {
+instalar() {
 
-    if ! rpm -q bind &>/dev/null; then
-        echo "DNS instalado"
-    return
-    fi
+ if rpm -q bind &>/dev/null; then
+  echo "bind instalado"
+ else
+  dnf install -y bind bind-utils
+  systemctl enable named
+  systemctl start named
+ fi
 
-   if  systemctl is-active --quiet named; then
- echo "DNS activo y corriendo"
-else
- echo "DNS instalado pero detenido"
-fi
+ dns_local
 }
 
-# crear zona
-crear_zona() {
+estado() {
 
-    dominio=$1
-    ip=$2
+ rpm -q bind &>/dev/null && echo "bind presente" || { echo "bind no instalado"; return; }
 
-    if [[ -z $dominio || -z $ip ]]; then
-        echo "Uso: ./mirisdns.sh crear dominio.com IP"
-        return
-    fi
+ systemctl is-active --quiet named && echo "servicio activo" || echo "servicio detenido"
+ systemctl is-enabled --quiet named && echo "inicio habilitado" || echo "inicio deshabilitado"
+}
 
-    comprobar_ip $ip
-    if [[ $? -ne 0 ]]; then
-        echo "IP invalida"
-        return
-    fi
+agregar() {
 
-    if grep -q "zone \"$dominio\"" $CONF_PRINCIPAL; then
-        echo "El dominio ya existe"
-        return
-    fi
+ DOM=$1
+ IP=$2
+ ZONA="$ZONADIR/db.$DOM"
 
-    echo "zone \"$dominio\" IN {
-    type master;
-    file \"$DIRECTORIO_ZONAS/db.$dominio\";
-};" | sudo tee -a $CONF_PRINCIPAL > /dev/null
+ [ -z "$DOM" ] || [ -z "$IP" ] && { echo "uso agregar dominio ip"; exit 1; }
 
-    sudo bash -c "cat > $DIRECTORIO_ZONAS/db.$dominio" <<EOF
-\$TTL 604800
-@   IN  SOA ns.$dominio. admin.$dominio. (
-        2
-        604800
-        86400
-        2419200
-        604800 )
+ checar_ip "$IP" || { echo "ip invalida"; exit 1; }
 
-@   IN  NS  ns.$dominio.
-ns  IN  A   $ip
-@   IN  A   $ip
-www IN  A   $ip
+ grep -q "zone \"$DOM\"" $LOCALCONF && { echo "existe"; exit 0; }
+
+ cat <<EOF >> $LOCALCONF
+
+zone "$DOM" IN {
+ type master;
+ file "db.$DOM";
+};
+
 EOF
 
-    sudo chown named:named $DIRECTORIO_ZONAS/db.$dominio
-    sudo chmod 640 $DIRECTORIO_ZONAS/db.$dominio
+ cat <<EOF > $ZONA
+\$TTL 604800
+@ IN SOA NS.$DOM. admin.$DOM. (
+ 1
+ 604800
+ 86400
+ 2419200
+ 604800 )
 
-    sudo systemctl restart named
-    echo "Zona creada correctamente"
+@ IN NS ns.$DOM.
+ns IN A $IP
+@ IN A $IP
+WWW IN CNAME @
+EOF
+
+ chown named:named $ZONA
+ chmod 640 $ZONA
+
+ systemctl restart named
+ dns_local
+
+ echo "dominio agregado"
 }
 
-# mostrar zonas
-mostrar_zonas() {
+listar() {
 
-    echo "Zonas configuradas:"
-
-    grep '^zone "' $CONF_PRINCIPAL | \
-    awk -F\" '{print $2}'
+ for Z in $ZONADIR/db.*; do
+  [ -f "$Z" ] || continue
+  DOM=$(basename "$Z" | sed 's/^db\.//')
+  IP=$(grep -E '^\s*@\s+IN\s+A\s+' "$Z" | awk '{print $4}')
+  echo "$DOM -> $IP"
+ done
 }
 
-# eliminar zona
-borrar_zona() {
+eliminar_dominio() {
 
-    dominio=$1
+ DOM=$1
+ [ -z "$DOM" ] && { echo "uso eliminar dominio"; exit 1; }
 
-    if [[ -z $dominio ]]; then
-        echo "Uso: ./dnsM.sh borrar dominio.com"
-        return
-    fi
+ ZONA="/var/named/db.$DOM"
 
-    sudo sed -i "/zone \"$dominio\"/,/};/d" $CONF_PRINCIPAL
-    sudo rm -f $DIRECTORIO_ZONAS/db.$dominio
+ sudo sed -i "/zone \"$DOM\"/,/};/d" /etc/named.conf
 
-    sudo systemctl restart named
-    echo "Zona eliminada"
+ [ -f "$ZONA" ] && sudo rm -f "$ZONA"
+
+ if sudo named-checkconf &>/dev/null; then
+  sudo systemctl restart named
+  echo "eliminado"
+ else
+  echo "error config"
+ fi
 }
 
-# quitar bind
-remover_dns() {
-
-    sudo systemctl stop named
-    sudo dnf remove -y bind bind-utils
-    echo "DNS removido del sistema"
+desinstalar() {
+ dnf remove -y bind bind-utils
+ echo "dns removido"
 }

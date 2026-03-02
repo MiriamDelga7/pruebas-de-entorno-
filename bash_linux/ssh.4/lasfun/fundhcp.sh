@@ -1,215 +1,165 @@
 #!/bin/bash
 
+checar_ip() {
+ [[ $1 =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+ IFS='.' read -r a b c d <<< "$1"
 
-INTERFAZ_DHCP="enp0s8"
-
-
-# VALIDACION IP
-
-validar_ip_rango() {
-
- [[ $1 =~ ^([0-9]{1,3}[.]){3}[0-9]{1,3}$ ]] || return 1
-
- IFS='.' read -r oc1 oc2 oc3 oc4 <<< "$1"
-
- for o in $oc1 $oc2 $oc3 $oc4; do
-  [[ $o -ge 0 && $o -le 255 ]] || return 1
+ for n in $a $b $c $d; do
+  [[ $n -ge 0 && $n -le 255 ]] || return 1
  done
 
  [[ "$1" == "0.0.0.0" ]] && return 1
- [[ $oc1 -eq 127 || $oc1 -eq 0 ]] && return 1
-
+ [[ $a -eq 127 ]] && return 1
+ [[ $a -eq 0 ]] && return 1
  return 0
 }
 
-
-# IP -> NUMERO
-
-ip_a_numero_rango() {
- IFS='.' read -r oc1 oc2 oc3 oc4 <<< "$1"
- echo $(( (oc1<<24)+(oc2<<16)+(oc3<<8)+oc4 ))
+ipnum2() {
+ IFS='.' read -r a b c d <<< "$1"
+ echo $(( (a<<24)+(b<<16)+(c<<8)+d ))
 }
 
-numero_a_ip_rango() {
- num=$1
- echo "$((num>>24&255)).$((num>>16&255)).$((num>>8&255)).$((num&255))"
+rango_ok() {
+ [[ $(ipnum2 "$2") -ge $(ipnum2 "$1") ]]
 }
 
-validar_rango_ip() {
- [[ $(ip_a_numero_rango "$2") -ge $(ip_a_numero_rango "$1") ]]
+sumar_ip() {
+ n=$(ipnum2 "$1")
+ nuevo=$((n+1))
+
+ a=$(( (nuevo>>24)&255 ))
+ b=$(( (nuevo>>16)&255 ))
+ c=$(( (nuevo>>8)&255 ))
+ d=$(( nuevo&255 ))
+
+ echo "$a.$b.$c.$d"
 }
 
-sumar_uno_ip_rango() {
- numero_a_ip_rango $(( $(ip_a_numero_rango "$1")+1 ))
-}
-
-misma_red_rango() {
+misma_subred() {
  IFS='.' read -r a1 a2 a3 _ <<< "$1"
  IFS='.' read -r b1 b2 b3 _ <<< "$2"
  [[ $a1 -eq $b1 && $a2 -eq $b2 && $a3 -eq $b3 ]]
 }
 
-obtener_mascara_rango() {
+obtener_mask() {
  echo "255.255.255.0"
 }
 
-
-# DHCP INSTALACION
-
-verificar_dhcp_rango() {
- rpm -q dhcp-server &>/dev/null && \
- echo "DHCP instalado" || echo "DHCP no instalado"
+verificar_dhcp() {
+ rpm -q dhcp-server &>/dev/null && echo "DHCP instalado" || echo "DHCP no instalado"
 }
 
-instalar_dhcp_rango() {
+instalar_dhcp() {
 
  if rpm -q dhcp-server &>/dev/null; then
-  read -p "Quieres reinstalar? (s/n): " opcion
-
-  if [[ $opcion =~ [sS] ]]; then
-   urpmi --replacepkgs --auto dhcp-server
+  read -p "Reinstalar? (s/n): " op
+  if [[ $op == "s" || $op == "S" ]]; then
+   sudo urpmi --replacepkgs --auto dhcp-server &>/dev/null
+   echo "Reinstalado"
+  else
+   echo "Cancelado"
   fi
  else
-  urpmi --auto dhcp-server
+  sudo urpmi --auto dhcp-server &>/dev/null
+  echo "Instalado"
  fi
-
- echo "Instalacion DHCP completa"
 }
 
-# CONFIGURACION DHCP
-
-configurar_dhcp_rango() {
-
- echo "Configuracion DHCP en interfaz $INTERFAZ_DHCP"
+configurar_dhcp() {
 
  while true; do
-  read -p "IP inicial servidor: " IP_INICIAL
-  validar_ip_rango "$IP_INICIAL" && break
-  echo "IP invalida"
+  read -p "Ip inicial: " IP_INI
+  checar_ip "$IP_INI" && break
  done
 
  while true; do
-  read -p "IP final rango: " IP_FINAL
-  validar_ip_rango "$IP_FINAL" && break
-  echo "IP invalida"
+  read -p "Ip final: " IP_FIN
+  checar_ip "$IP_FIN" && break
  done
 
- misma_red_rango "$IP_INICIAL" "$IP_FINAL" || {
-  echo "No estan en la misma red"
-  exit 1
- }
+ misma_subred "$IP_INI" "$IP_FIN" || { echo "Red distinta"; return 1; }
+ rango_ok "$IP_INI" "$IP_FIN" || { echo "Rango invalido"; return 1; }
 
- validar_rango_ip "$IP_INICIAL" "$IP_FINAL" || {
-  echo "Rango incorrecto"
-  exit 1
- }
+ IP_SERV="$IP_INI"
+ IP_RANGO=$(sumar_ip "$IP_INI")
 
- IP_SERVIDOR="$IP_INICIAL"
- IP_RANGO_INICIAL=$(sumar_uno_ip_rango "$IP_INICIAL")
+ rango_ok "$IP_RANGO" "$IP_FIN" || { echo "Servidor en rango"; return 1; }
 
- read -p "DNS1 (default 8.8.8.8): " DNS1
- read -p "DNS2 opcional: " DNS2
+ GATEWAY="$IP_SERV"
 
- [ -z "$DNS1" ] && DNS1="8.8.8.8"
+ IF_SSH=$(ip route | awk '/default/ {print $5}')
+ IF_DHCP=$(ip -o link show | awk -F': ' '{print $2}' | grep -v lo | grep -v "$IF_SSH" | head -n1)
+
+ [ -z "$IF_DHCP" ] && { echo "Sin interfaz"; return 1; }
+
+ read -p "DNS1: " DNS1
+ read -p "DNS2: " DNS2
+
+ [ -z "$DNS1" ] && DNS1="$IP_SERV"
 
  if [ -z "$DNS2" ]; then
-  DNS_CONFIG="option domain-name-servers $DNS1;"
+  DNS_CONF="option domain-name-servers $DNS1;"
  else
-  DNS_CONFIG="option domain-name-servers $DNS1, $DNS2;"
+  DNS_CONF="option domain-name-servers $DNS1, $DNS2;"
  fi
 
- read -p "Lease default (300): " LEASE_DEFAULT
- read -p "Lease max (300): " LEASE_MAX
+ read -p "Lease default: " L1
+ read -p "Lease max: " L2
 
- [ -z "$LEASE_DEFAULT" ] && LEASE_DEFAULT=300
- [ -z "$LEASE_MAX" ] && LEASE_MAX=300
+ [ -z "$L1" ] && L1=300
+ [ -z "$L2" ] && L2=300
 
- mascara=$(obtener_mascara_rango)
- red=${IP_SERVIDOR%.*}.0
+ mask=$(obtener_mask "$IP_SERV")
+ red=${IP_SERV%.*}.0
 
+ sudo ip addr flush dev $IF_DHCP
+ sudo ip addr add $IP_SERV/24 dev $IF_DHCP
+ sudo ip link set $IF_DHCP up
 
- # CONFIGURAR SOLO ADAPTADOR 2
-
- ip addr flush dev $INTERFAZ_DHCP
- ip addr add $IP_SERVIDOR/24 dev $INTERFAZ_DHCP
- ip link set $INTERFAZ_DHCP up
-
-
- # ARCHIVO DHCP
-
- tee /etc/dhcpd.conf >/dev/null <<EOF
-default-lease-time $LEASE_DEFAULT;
-max-lease-time $LEASE_MAX;
+ sudo tee /etc/dhcpd.conf >/dev/null <<EOF
+default-lease-time $L1;
+max-lease-time $L2;
 authoritative;
 
-subnet $red netmask $mascara {
- range $IP_RANGO_INICIAL $IP_FINAL;
- option routers $IP_SERVIDOR;
- $DNS_CONFIG
+subnet $red netmask $mask {
+ range $IP_RANGO $IP_FIN;
+ option routers $GATEWAY;
+ $DNS_CONF
 }
 EOF
 
- echo "DHCPD_INTERFACE=$INTERFAZ_DHCP" > /etc/sysconfig/dhcpd
+ echo "DHCPD_INTERFACE=$IF_DHCP" | sudo tee /etc/sysconfig/dhcpd >/dev/null
 
- echo "Configuracion completada"
+ sudo chattr -i /etc/resolv.conf 2>/dev/null
+
+ sudo tee /etc/resolv.conf >/dev/null <<EOF
+nameserver $IP_SERV
+nameserver 8.8.8.8
+EOF
 }
 
+guardaryreiniciar() {
 
-# GUARDAR Y REINICIAR
-
-guardar() {
-
- echo "Validando configuracion..."
-
- if dhcpd -t &>/dev/null; then
-
-  systemctl enable dhcpd
-  systemctl restart dhcpd
-
-  echo "DHCP activo en $INTERFAZ_DHCP"
-
+ if sudo dhcpd -t &>/dev/null; then
+  sudo systemctl enable dhcpd &>/dev/null
+  sudo systemctl restart dhcpd &>/dev/null && echo "Reiniciado" || echo "Error reinicio"
  else
-  echo "Error en configuracion"
+  echo "Error config"
  fi
 }
 
-# MONITOREO
+monitoreo() {
 
-monitoreo_rango() {
-
- echo "Estado DHCP:"
- systemctl is-active dhcpd && echo "Activo" || echo "Inactivo"
-
- echo ""
- echo "Clientes:"
- grep lease /var/lib/dhcpd/dhcpd.leases 2>/dev/null
+ systemctl is-active --quiet dhcpd && echo "Activo" || echo "Inactivo"
+ grep "lease " /var/lib/dhcpd/dhcpd.leases 2>/dev/null
 }
 
+reset_dhcp() {
 
-# RESET DHCP
-
-reset_dhcp_rango() {
-
- systemctl stop dhcpd
- systemctl disable dhcpd
-
- rm -f /etc/dhcpd.conf
- rm -f /var/lib/dhcpd/dhcpd.leases
-
- urpmi --auto dhcp-server
-
- echo "Reset DHCP completado"
-}
-
-
-# VERIFICAR INTERFAZ DHCP
-
-verificar_interfaz_dhcp() {
-
- echo "Interfaces disponibles:"
- ip -o link show | awk -F': ' '{print $2}'
-
- echo ""
- echo "DHCP configurado en:"
- cat /etc/sysconfig/dhcpd
+ sudo systemctl stop dhcpd 2>/dev/null
+ sudo systemctl disable dhcpd 2>/dev/null
+ sudo rm -f /etc/dhcpd.conf
+ sudo rm -f /var/lib/dhcpd/dhcpd.leases
+ sudo dnf remove -y dhcp-server >/dev/null 2>&1
+ echo "Reset completo"
 }
